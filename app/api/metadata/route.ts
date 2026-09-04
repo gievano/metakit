@@ -27,25 +27,31 @@ interface ActionBody {
 
 function tmpPath(name: string): string {
   const safe = name.replace(/[^a-zA-Z0-9._-]/g, "_");
-  return `${globalThis.crypto.randomUUID()}-${safe}`;
+  return `/tmp/${globalThis.crypto.randomUUID()}-${safe}`;
 }
 
-function toWriteTags(edits: Record<string, string | number | null>): Record<string, string | number | null> {
-  const tags: Record<string, string | number | null> = {};
+function toWriteTags(edits: Record<string, string | number | null>): Record<string, string | number | string[] | null> {
+  const tags: Record<string, string | number | string[] | null> = {};
   for (const f of FIELDS) {
     if (!(f.key in edits)) continue;
     const v = edits[f.key];
     if (v === null || v === "") {
-      tags[f.tag] = null; // delete tag
+      tags[f.tag] = null;
+    } else if (f.key === "keywords" && typeof v === "string") {
+      tags[f.tag] = v.split(",").map((s) => s.trim()).filter(Boolean);
+    } else if (f.key === "datetimeoriginal" && typeof v === "string") {
+      tags[f.tag] = v.replace("T", " ").replace(/-/g, ":") + (v.length === 16 ? ":00" : "");
     } else {
       tags[f.tag] = v;
     }
   }
-  // GPS needs refs for proper EXIF, but decimal + GPSLatitudeRef handled by ExifTool;
-  // write signed decimal via composite is simplest: rely on GPSLatitude/GPSLongitude with refs
-  if ("GPSLatitude" in tags && typeof tags.GPSLatitude === "number") {
-    tags.GPSLatitudeRef = tags.GPSLatitude >= 0 ? "N" : "S";
-    tags.GPSLongitudeRef = (tags.GPSLongitude as number) >= 0 ? "E" : "W";
+  if ("gpslat" in edits && typeof edits.gpslat === "number") {
+    tags.GPSLatitude = Math.abs(edits.gpslat);
+    tags.GPSLatitudeRef = edits.gpslat >= 0 ? "N" : "S";
+    if ("gpslon" in edits && typeof edits.gpslon === "number") {
+      tags.GPSLongitude = Math.abs(edits.gpslon);
+      tags.GPSLongitudeRef = edits.gpslon >= 0 ? "E" : "W";
+    }
   }
   return tags;
 }
