@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import JSZip from "jszip";
 import Dropzone from "@/components/Dropzone";
 import FileList from "@/components/FileList";
@@ -8,11 +8,57 @@ import MetadataTable from "@/components/MetadataTable";
 import EditorForm from "@/components/EditorForm";
 import { parseFile } from "@/lib/exif";
 import type { EditValues, ParsedFile } from "@/lib/fields";
+import { FIELDS } from "@/lib/fields";
 
 type Tab = "viewer" | "editor";
 
 const btn =
   "px-3 py-1.5 text-xs rounded-sm border transition-colors disabled:opacity-40 disabled:cursor-not-allowed";
+
+// Helper: konversi EXIF datetime "2024:01:15 10:30:00" → datetime-local "2024-01-15T10:30"
+function exifDateToInputDate(exifDate: string): string {
+  // EXIF format: "2024:01:15 10:30:00"
+  // Input format: "2024-01-15T10:30"
+  const match = exifDate.match(/^(\d{4}):(\d{2}):(\d{2})\s+(\d{2}):(\d{2}):(\d{2})$/);
+  if (!match) return exifDate; // fallback: return as-is
+  const [_, year, month, day, hour, minute] = match;
+  return `${year}-${month}-${day}T${hour}:${minute}`;
+}
+
+// Helper: auto-populate edits dari metadata existing
+function populateEditsFromMetadata(rows: ParsedFile["rows"]): EditValues {
+  const edits: EditValues = {};
+  
+  // Map EXIF tag names ke field keys
+  const tagToKey: Record<string, string> = {};
+  for (const f of FIELDS) {
+    tagToKey[f.tag] = f.key;
+  }
+  
+  for (const row of rows) {
+    const fieldKey = tagToKey[row.name];
+    if (!fieldKey) continue;
+    
+    const field = FIELDS.find(f => f.key === fieldKey);
+    if (!field) continue;
+    
+    // Special handling per type
+    if (field.type === "date") {
+      edits[fieldKey] = exifDateToInputDate(row.value);
+    } else if (field.type === "gps") {
+      // GPS already in decimal degrees from ExifReader
+      const num = parseFloat(row.value);
+      if (!isNaN(num)) edits[fieldKey] = num;
+    } else if (field.type === "rating") {
+      const num = parseInt(row.value, 10);
+      if (!isNaN(num)) edits[fieldKey] = num;
+    } else {
+      edits[fieldKey] = row.value;
+    }
+  }
+  
+  return edits;
+}
 
 export default function Home() {
   const [files, setFiles] = useState<ParsedFile[]>([]);
@@ -26,6 +72,16 @@ export default function Home() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
   const active = files.find((f) => f.id === activeId) ?? null;
+
+  // Auto-populate edits dari metadata pas pertama kali switch ke Editor tab
+  useEffect(() => {
+    if (tab === "editor" && active && Object.keys(active.edits).length === 0) {
+      const populated = populateEditsFromMetadata(active.rows);
+      if (Object.keys(populated).length > 0) {
+        patchFile(active.id, { edits: populated });
+      }
+    }
+  }, [tab, active]);
 
   const addFiles = useCallback(async (incoming: File[]) => {
     const parsed = await Promise.all(incoming.map(parseFile));
