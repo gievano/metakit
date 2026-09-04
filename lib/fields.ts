@@ -51,6 +51,7 @@ export interface ParsedFile {
   size: number;
   type: string;
   rows: MetadataRow[];
+  originalRows?: MetadataRow[];
   edits: EditValues;
   status: "ready" | "saving" | "saved" | "stripped" | "error";
   error?: string;

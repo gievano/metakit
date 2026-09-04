@@ -23,11 +23,19 @@ export default function Home() {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
 
   const active = files.find((f) => f.id === activeId) ?? null;
 
   const addFiles = useCallback(async (incoming: File[]) => {
     const parsed = await Promise.all(incoming.map(parseFile));
+    for (const p of parsed) {
+      const raw = incoming.find((f) => f.name === p.name);
+      if (raw) {
+        rawFilesRef.current.set(p.id, raw);
+        originalFilesRef.current.set(p.id, raw);
+      }
+    }
     setFiles((prev) => [...prev, ...parsed]);
     setActiveId((prev) => prev ?? parsed[0]?.id ?? null);
   }, []);
@@ -39,6 +47,9 @@ export default function Home() {
     setFiles((prev) =>
       prev.map((f) => (f.id === id ? { ...f, edits: { ...f.edits, [key]: value } } : f))
     );
+
+  const rawFilesRef = useRef(new Map<string, File>());
+  const originalFilesRef = useRef(new Map<string, File>());
 
   const toApiFiles = (list: ParsedFile[], cache: Map<string, File>) =>
     list.map(async (f) => {
@@ -65,40 +76,73 @@ export default function Home() {
       setNotice("No files selected.");
       return;
     }
+
+    // Pre-validation: estimate total size
+    let totalSize = 0;
+    for (const t of targets) {
+      const raw = rawFilesRef.current.get(t.id);
+      if (raw) totalSize += raw.size;
+    }
+    const estimatedPayload = totalSize * 1.4; // base64 overhead ~33% + JSON wrapper
+    if (estimatedPayload > 4_000_000 && targets.length === 1) {
+      setNotice("⚠️ File too large (>4MB). Server upload limit exceeded. Try a smaller file.");
+      return;
+    }
+
     if (action === "strip" && !confirm(`Strip ALL metadata from ${targets.length} file(s)? This cannot be undone.`))
       return;
 
     setBusy(true);
     setNotice(null);
     const edits = batchMode ? batchEdits : active?.edits ?? {};
+
+    // Chunked batch: split into groups of 3 files max per request
+    const CHUNK_SIZE = 3;
+    const chunks: ParsedFile[][] = [];
+    for (let i = 0; i < targets.length; i += CHUNK_SIZE) {
+      chunks.push(targets.slice(i, i + CHUNK_SIZE));
+    }
+
+    let completed = 0;
     try {
-      const payload = await Promise.all(toApiFiles(targets, rawFilesRef.current));
-      const res = await fetch("/api/metadata", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action, files: payload, edits }),
-      });
-      const json = await res.json();
-      if (!res.ok) throw new Error(json.error ?? "Request failed");
-      for (const r of json.results as { fileName: string; ok: boolean; data?: string; error?: string }[]) {
-        const target = targets.find((t) => t.name === r.fileName);
-        if (!target) continue;
-        if (r.ok && r.data) {
-          const bin = atob(r.data);
-          const bytes = new Uint8Array(bin.length);
-          for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-          const newFile = new File([bytes], target.name, { type: target.type });
-          rawFilesRef.current.set(target.id, newFile);
-          const re = await parseFile(newFile);
-          patchFile(target.id, {
-            rows: re.rows,
-            status: action === "strip" ? "stripped" : "saved",
-            error: undefined,
-          });
-        } else {
-          patchFile(target.id, { status: "error", error: r.error });
+      for (const chunk of chunks) {
+        setNotice(`Processing ${completed + 1}-${completed + chunk.length} of ${targets.length}...`);
+        const payload = await Promise.all(toApiFiles(chunk, rawFilesRef.current));
+        const res = await fetch("/api/metadata", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action, files: payload, edits }),
+        });
+        const json = await res.json();
+        if (!res.ok) throw new Error(json.error ?? "Request failed");
+        for (const r of json.results as { fileName: string; ok: boolean; data?: string; error?: string }[]) {
+          const target = chunk.find((t) => t.name === r.fileName);
+          if (!target) continue;
+          if (r.ok && r.data) {
+            // Backup original file sebelum replace (hanya pertama kali)
+            if (!originalFilesRef.current.has(target.id)) {
+              const current = rawFilesRef.current.get(target.id);
+              if (current) originalFilesRef.current.set(target.id, current);
+            }
+            const bin = atob(r.data);
+            const bytes = new Uint8Array(bin.length);
+            for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+            const newFile = new File([bytes], target.name, { type: target.type });
+            rawFilesRef.current.set(target.id, newFile);
+            const re = await parseFile(newFile);
+            patchFile(target.id, {
+              rows: re.rows,
+              originalRows: target.originalRows ?? target.rows,
+              status: action === "strip" ? "stripped" : "saved",
+              error: undefined,
+            });
+          } else {
+            patchFile(target.id, { status: "error", error: r.error });
+          }
         }
+        completed += chunk.length;
       }
+
       if (targets.length === 1 && action === "write") {
         download(targets[0]);
         setNotice(`✓ Saved and downloaded ${targets[0].name}`);
@@ -113,13 +157,16 @@ export default function Home() {
         );
       }
     } catch (err) {
-      setNotice(err instanceof Error ? err.message : "Action failed");
+      const msg = err instanceof Error ? err.message : "Action failed";
+      setNotice(
+        msg.includes("payload") || msg.includes("body")
+          ? "⚠️ Request too large. Try fewer/smaller files per batch."
+          : `❌ ${msg}`
+      );
     } finally {
       setBusy(false);
     }
   };
-
-  const rawFilesRef = useRef(new Map<string, File>());
 
   const download = (f: ParsedFile) => {
     const raw = rawFilesRef.current.get(f.id);
@@ -187,6 +234,25 @@ export default function Home() {
       return next;
     });
 
+  const revertToOriginal = async (id: string) => {
+    const orig = originalFilesRef.current.get(id);
+    if (!orig) {
+      setNotice("No original file to revert to.");
+      return;
+    }
+    if (!confirm("Revert to original file? Current edits will be lost.")) return;
+    rawFilesRef.current.set(id, orig);
+    const re = await parseFile(orig);
+    patchFile(id, {
+      rows: re.rows,
+      originalRows: undefined,
+      edits: {},
+      status: "ready",
+      error: undefined,
+    });
+    setNotice(`✓ Reverted ${re.name} to original`);
+  };
+
   return (
     <div className="flex flex-col h-screen">
       {/* Header */}
@@ -194,6 +260,19 @@ export default function Home() {
         <div className="flex items-center gap-3">
           <span className="font-bold tracking-tight">MetaKit</span>
           <span className="text-[10px] text-dim border border-border rounded-sm px-1.5 py-0.5">v0.1</span>
+          {batchMode && selected.size > 0 && (
+            <div className="flex items-center gap-2">
+              <span className="text-xs px-2 py-1 bg-accent/20 border border-accent rounded-sm">
+                {selected.size} selected
+              </span>
+              <button
+                onClick={() => setSelected(new Set())}
+                className="text-[10px] px-1.5 py-0.5 border border-border hover:border-dim rounded-sm"
+              >
+                Clear
+              </button>
+            </div>
+          )}
         </div>
         <div className="flex items-center gap-2">
           <button onClick={downloadJson} disabled={files.length === 0} className={`${btn} border-border hover:border-dim`}>
@@ -216,9 +295,19 @@ export default function Home() {
           </div>
         </main>
       ) : (
-        <div className="flex-1 flex min-h-0">
+        <div className="flex-1 flex min-h-0 relative">
+          {/* Mobile sidebar toggle */}
+          <button
+            onClick={() => setSidebarOpen(!sidebarOpen)}
+            className="md:hidden fixed bottom-4 left-4 z-50 px-3 py-2 bg-panel2 border border-border rounded-sm text-xs shadow-lg"
+          >
+            {sidebarOpen ? "Close" : `Files (${files.length})`}
+          </button>
+          
           {/* Sidebar */}
-          <aside className="w-64 shrink-0 border-r border-border flex flex-col min-h-0">
+          <aside className={`w-64 shrink-0 border-r border-border flex flex-col min-h-0 ${
+            sidebarOpen ? "fixed inset-y-0 left-0 z-40 bg-bg md:relative" : "hidden md:flex"
+          }`}>
             <div className="flex items-center justify-between px-3 py-2 border-b border-border text-xs text-dim shrink-0">
               <span>{files.length} file(s)</span>
               {batchMode && (
@@ -305,6 +394,15 @@ export default function Home() {
                     >
                       Strip all
                     </button>
+                    {!batchMode && active?.originalRows && (
+                      <button
+                        onClick={() => revertToOriginal(active.id)}
+                        disabled={busy}
+                        className={`${btn} border-border text-dim hover:border-dim`}
+                      >
+                        Revert
+                      </button>
+                    )}
                   </>
                 )}
               </div>
