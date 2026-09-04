@@ -149,8 +149,13 @@ function applyEdits(dataURL: string, edits: Record<string, string | number | nul
   return piexif.insert(exifBytes, dataURL);
 }
 
-function stripMetadata(dataURL: string): string {
-  // Remove all EXIF data
+function stripMetadata(dataURL: string, isJPEG: boolean): string {
+  if (!isJPEG) {
+    // Non-JPEG: piexif can't handle, return as-is for now
+    // TODO: implement binary metadata stripping for PNG/HEIC/TIFF
+    return dataURL;
+  }
+  // JPEG: remove all EXIF data via piexif
   return piexif.remove(dataURL);
 }
 
@@ -206,7 +211,7 @@ export async function POST(req: NextRequest) {
 
       let resultDataURL: string;
       if (isStrip) {
-        resultDataURL = stripMetadata(dataURL);
+        resultDataURL = stripMetadata(dataURL, !!isJPEG);
       } else {
         if (!edits || Object.keys(edits).length === 0) {
           return NextResponse.json({
@@ -279,7 +284,7 @@ export async function POST(req: NextRequest) {
 
       let resultDataURL: string;
       if (action === "strip") {
-        resultDataURL = stripMetadata(dataURL);
+        resultDataURL = stripMetadata(dataURL, !!isJPEG);
       } else {
         const edits = body.edits ?? {};
         if (Object.keys(edits).length === 0) {
