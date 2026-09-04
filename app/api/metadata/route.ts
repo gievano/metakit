@@ -43,9 +43,17 @@ function toWriteTags(edits: Record<string, string | number | null>): Record<stri
     if (v === null || v === "") {
       tags[f.tag] = null;
     } else if (f.key === "keywords" && typeof v === "string") {
-      tags[f.tag] = v.split(",").map((s) => s.trim()).filter(Boolean);
+      const cleaned = v.split(",").map((s) => s.trim()).filter(Boolean);
+      if (cleaned.length > 0) tags[f.tag] = cleaned;
     } else if (f.key === "datetimeoriginal" && typeof v === "string") {
-      tags[f.tag] = v.replace("T", " ").replace(/-/g, ":") + (v.length === 16 ? ":00" : "");
+      // Skip if empty or invalid format
+      if (v.length < 10) continue;
+      // Convert "2024-01-15T10:30" → "2024:01:15 10:30:00"
+      const formatted = v.replace("T", " ").replace(/-/g, ":") + (v.length === 16 ? ":00" : "");
+      tags[f.tag] = formatted;
+    } else if (typeof v === "string" && v.trim() === "") {
+      // Skip empty strings for other fields
+      continue;
     } else {
       tags[f.tag] = v;
     }
@@ -109,7 +117,13 @@ export async function POST(req: NextRequest) {
             { status: 400 }
           );
         }
-        await exiftool.write(tmp, tags, { writeArgs: ["-overwrite_original"] });
+        console.log("[finalize] Writing tags:", JSON.stringify(tags, null, 2));
+        try {
+          await exiftool.write(tmp, tags, { writeArgs: ["-overwrite_original"] });
+        } catch (exiftoolErr: any) {
+          console.error("[finalize] ExifTool error:", exiftoolErr.message);
+          throw new Error(`ExifTool: ${exiftoolErr.message}`);
+        }
       }
       
       // Read result
