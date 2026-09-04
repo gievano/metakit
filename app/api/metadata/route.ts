@@ -80,13 +80,17 @@ function applyEdits(dataURL: string, edits: Record<string, string | number | nul
         break;
       case "keywords":
         if (typeof v === "string") {
-          // Store as semicolon-separated string (EXIF standard)
-          const cleaned = v.split(",").map((s) => s.trim()).filter(Boolean).join(";");
-          if (cleaned) exifObj["0th"][piexif.ImageIFD.XPKeywords] = cleaned;
+          // Store as comma-separated string in ImageDescription or skip (piexif doesn't support XPKeywords well)
+          // For now, skip keywords in piexif implementation
+          // TODO: store in ImageDescription or use exiftool for XMP Keywords
         }
         break;
       case "usercomment":
-        if (typeof v === "string") exifObj["Exif"][piexif.ExifIFD.UserComment] = v;
+        // UserComment needs special ASCII encoding for piexif
+        if (typeof v === "string") {
+          const ascii = "ASCII\0\0\0" + v;
+          exifObj["Exif"][piexif.ExifIFD.UserComment] = ascii;
+        }
         break;
       case "datetimeoriginal":
         if (typeof v === "string") {
@@ -124,10 +128,15 @@ function applyEdits(dataURL: string, edits: Record<string, string | number | nul
         if (typeof v === "number") exifObj["Exif"][piexif.ExifIFD.FocalLength] = toFraction(v);
         break;
       case "whitebalance":
-        if (typeof v === "string") exifObj["Exif"][piexif.ExifIFD.WhiteBalance] = v;
+        // WhiteBalance expects integer: 0=Auto, 1=Manual
+        if (typeof v === "string") {
+          const val = v.toLowerCase().includes("auto") ? 0 : 1;
+          exifObj["Exif"][piexif.ExifIFD.WhiteBalance] = val;
+        }
         break;
       case "flash":
-        if (typeof v === "string") exifObj["Exif"][piexif.ExifIFD.Flash] = v;
+        // Flash expects integer bitmask, not string - skip for now
+        // TODO: parse flash string to bitmask (0=no flash, 1=fired, etc)
         break;
     }
   }
