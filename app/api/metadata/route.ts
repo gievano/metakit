@@ -186,9 +186,10 @@ export async function POST(req: NextRequest) {
     const fullBuffer = session.chunks[0];
     
     try {
-      // Check if JPEG
       const isJPEG = fileName.match(/\.(jpg|jpeg)$/i);
-      if (!isJPEG) {
+      
+      // Strip works for all formats, edit only for JPEG
+      if (!isStrip && !isJPEG) {
         return NextResponse.json({
           results: [{
             id: sessionId,
@@ -261,9 +262,10 @@ export async function POST(req: NextRequest) {
     const id = `${f.name}-${f.data.length}`;
     
     try {
-      // Check if JPEG
       const isJPEG = f.name.match(/\.(jpg|jpeg)$/i);
-      if (!isJPEG) {
+      
+      // Strip works for all formats, edit only for JPEG
+      if (action === "write" && !isJPEG) {
         results.push({
           id,
           fileName: f.name,
