@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import piexif from "piexifjs";
+import sharp from "sharp";
 import { FIELDS } from "@/lib/fields";
 import { chunkStore } from "./chunk/route";
 
@@ -17,6 +18,17 @@ interface ActionBody {
   sessionId?: string;
   fileName?: string;
   isStrip?: boolean;
+}
+
+// Helper: convert HEIC/HEIF to JPEG
+async function convertHEICtoJPEG(buffer: Buffer): Promise<Buffer> {
+  try {
+    return await sharp(buffer)
+      .jpeg({ quality: 95 })
+      .toBuffer();
+  } catch (error) {
+    throw new Error(`HEIC conversion failed: ${error}`);
+  }
 }
 
 // Helper: convert decimal degrees to DMS (degrees, minutes, seconds)
@@ -158,8 +170,8 @@ function applyEdits(dataURL: string, edits: Record<string, string | number | nul
   return piexif.insert(exifBytes, dataURL);
 }
 
-function stripMetadata(dataURL: string, isJPEG: boolean): string {
-  if (!isJPEG) {
+function stripMetadata(dataURL: string, isEditable: boolean): string {
+  if (!isEditable) {
     // Non-JPEG: piexif can't handle, return as-is for now
     // TODO: implement binary metadata stripping for PNG/HEIC/TIFF
     return dataURL;
@@ -197,19 +209,41 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const fullBuffer = session.chunks[0];
+    let fullBuffer = session.chunks[0];
+    let finalFileName = fileName;
     
     try {
       const isJPEG = fileName.match(/\.(jpg|jpeg)$/i);
+      const isHEIC = fileName.match(/\.(heic|heif)$/i);
       
-      // Strip works for all formats, edit only for JPEG
-      if (!isStrip && !isJPEG) {
+      // Convert HEIC to JPEG before processing
+      if (isHEIC) {
+        try {
+          fullBuffer = await convertHEICtoJPEG(fullBuffer);
+          finalFileName = fileName.replace(/\.(heic|heif)$/i, ".jpg");
+        } catch (convErr: any) {
+          chunkStore.delete(sessionId);
+          return NextResponse.json({
+            results: [{
+              id: sessionId,
+              fileName,
+              ok: false,
+              error: `HEIC conversion failed: ${convErr.message}`,
+            }],
+          });
+        }
+      }
+      
+      const isEditable = !!(isJPEG || isHEIC);
+      
+      // Strip works for all formats, edit only for JPEG/HEIC
+      if (!isStrip && !isEditable) {
         return NextResponse.json({
           results: [{
             id: sessionId,
             fileName,
             ok: false,
-            error: "Only JPEG files supported for editing",
+            error: "Only JPEG/HEIC files supported for editing",
           }],
         });
       }
@@ -220,13 +254,13 @@ export async function POST(req: NextRequest) {
 
       let resultDataURL: string;
       if (isStrip) {
-        resultDataURL = stripMetadata(dataURL, !!isJPEG);
+        resultDataURL = stripMetadata(dataURL, isEditable);
       } else {
         if (!edits || Object.keys(edits).length === 0) {
           return NextResponse.json({
             results: [{
               id: sessionId,
-              fileName,
+              fileName: finalFileName,
               ok: false,
               error: "No edits provided",
             }],
@@ -243,7 +277,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({
         results: [{
           id: sessionId,
-          fileName,
+          fileName: finalFileName,
           ok: true,
           data: resultBase64,
         }],
@@ -277,34 +311,59 @@ export async function POST(req: NextRequest) {
     
     try {
       const isJPEG = f.name.match(/\.(jpg|jpeg)$/i);
+      const isHEIC = f.name.match(/\.(heic|heif)$/i);
       
-      // Strip works for all formats, edit only for JPEG
-      if (action === "write" && !isJPEG) {
+      let processData = f.data;
+      let finalFileName = f.name;
+      
+      // Convert HEIC to JPEG before processing
+      if (isHEIC) {
+        try {
+          const heicBuffer = Buffer.from(f.data, "base64");
+          const jpegBuffer = await convertHEICtoJPEG(heicBuffer);
+          processData = jpegBuffer.toString("base64");
+          finalFileName = f.name.replace(/\.(heic|heif)$/i, ".jpg");
+        } catch (convErr: any) {
+          results.push({
+            id,
+            fileName: f.name,
+            ok: false,
+            error: `HEIC conversion failed: ${convErr.message}`,
+          });
+          continue;
+        }
+      }
+      
+      // After conversion, check if editable
+      const isEditable = !!(isJPEG || isHEIC);
+      
+      // Strip works for all formats, edit only for JPEG/HEIC
+      if (action === "write" && !isEditable) {
         results.push({
           id,
           fileName: f.name,
           ok: false,
-          error: "Only JPEG files supported for editing",
+          error: "Only JPEG/HEIC files supported for editing",
         });
         continue;
       }
 
-      const dataURL = `data:image/jpeg;base64,${f.data}`;
+      const dataURL = `data:image/jpeg;base64,${processData}`;
 
       let resultDataURL: string;
       if (action === "strip") {
-        resultDataURL = stripMetadata(dataURL, !!isJPEG);
+        resultDataURL = stripMetadata(dataURL, isEditable);
       } else {
         const edits = body.edits ?? {};
         if (Object.keys(edits).length === 0) {
-          results.push({ id, fileName: f.name, ok: false, error: "No edits provided" });
+          results.push({ id, fileName: finalFileName, ok: false, error: "No edits provided" });
           continue;
         }
         resultDataURL = applyEdits(dataURL, edits);
       }
 
       const resultBase64 = resultDataURL.replace(/^data:image\/jpeg;base64,/, "");
-      results.push({ id, fileName: f.name, ok: true, data: resultBase64 });
+      results.push({ id, fileName: finalFileName, ok: true, data: resultBase64 });
     } catch (err: any) {
       results.push({
         id,
