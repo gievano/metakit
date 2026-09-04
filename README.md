@@ -20,7 +20,7 @@ View, edit, and strip EXIF/IPTC/XMP/GPS metadata from images in your browser.
 - Revert to restore original file after edits
 
 ### Privacy
-- Metadata parsed locally in browser via [ExifReader](https://github.com/mattiasw/ExifReader)
+- Metadata parses locally in browser via [ExifReader](https://github.com/mattiasw/ExifReader)
 - Files upload to server only during save/strip, processed in-memory, then deleted
 - No database, no logs, no file retention, no user tracking
 
@@ -48,7 +48,7 @@ View, edit, and strip EXIF/IPTC/XMP/GPS metadata from images in your browser.
 1. Visit [metakit-six.vercel.app](https://metakit-six.vercel.app)
 2. Drag-drop or click to upload photos (JPG, PNG, HEIC, TIFF, WEBP)
 3. Files parse locally (no upload yet)
-4. Click a file, switch to Viewer tab to see all metadata
+4. Click a file, switch to Viewer tab to see metadata
 
 ### Edit Single File
 1. Select a file
@@ -58,7 +58,7 @@ View, edit, and strip EXIF/IPTC/XMP/GPS metadata from images in your browser.
 
 ### Batch Edit
 1. Toggle Batch mode (top-right)
-2. Check files you want to edit
+2. Check files to edit
 3. Fill fields (same values apply to all)
 4. Click Apply to N file(s), server processes in chunks (3 files/request)
 5. Progress shows "Processing 1-3 of 10..."
@@ -67,7 +67,7 @@ View, edit, and strip EXIF/IPTC/XMP/GPS metadata from images in your browser.
 ### Strip Metadata
 1. Select file(s)
 2. Click Strip all, confirm
-3. All metadata removed (EXIF, GPS, camera serial, software, edit history)
+3. Metadata removed (EXIF, GPS, camera serial, software, edit history)
 4. Single file auto-downloads; batch needs Export ZIP
 
 ### Revert
@@ -80,7 +80,7 @@ View, edit, and strip EXIF/IPTC/XMP/GPS metadata from images in your browser.
 
 | Scenario | Limit | Workaround |
 |----------|-------|------------|
-| Single file size | 4.5MB | Files over 4MB can be viewed (client-side unlimited) but not edited/stripped via server |
+| Single file size | 4.5MB | Files above 4MB can be viewed (client-side unlimited) but not edited/stripped via server |
 | Batch size | ~50-100 photos (chunked: 3 files/request) | Chunked processing bypasses per-request 4.5MB limit |
 | Timeout | 60s function timeout | ~20-30 files per batch (depends on file size) |
 | Viewer | ~100-200 photos | Browser memory limit (~1GB) |
@@ -132,7 +132,7 @@ Push to `main` branch, auto-deploys to Vercel
 
 ### Photography
 - Add copyright, photographer name, keywords before client delivery
-- Batch apply event name + date to 50+ wedding photos
+- Batch apply event name and date to 50+ wedding photos
 - Fix GPS coordinates (wrong location or missing data)
 - Strip metadata before social media upload
 
@@ -150,9 +150,9 @@ Push to `main` branch, auto-deploys to Vercel
 
 ## Known Issues
 
-- Large files (RAW over 4MB): viewable but not editable (server upload limit)
+- Large files (RAW above 4MB): viewable but not editable (server upload limit)
 - HEIC preview: Chrome/Firefox can't preview HEIC thumbnails (Safari can), but metadata is readable/editable
-- Batch over 50 files: may timeout on Vercel Hobby (60s limit); split into smaller batches
+- Batch above 50 files: may timeout on Vercel Hobby (60s limit); split into smaller batches
 
 ---
 
