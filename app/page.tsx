@@ -99,11 +99,19 @@ export default function Home() {
           patchFile(target.id, { status: "error", error: r.error });
         }
       }
-      setNotice(
-        action === "strip"
-          ? `Stripped metadata from ${targets.length} file(s).`
-          : `Saved edits to ${targets.length} file(s).`
-      );
+      if (targets.length === 1 && action === "write") {
+        download(targets[0]);
+        setNotice(`✓ Saved and downloaded ${targets[0].name}`);
+      } else if (targets.length === 1 && action === "strip") {
+        download(targets[0]);
+        setNotice(`✓ Stripped and downloaded ${targets[0].name}`);
+      } else {
+        setNotice(
+          action === "strip"
+            ? `✓ Stripped ${targets.length} file(s). Click "Export ZIP" in header to download all.`
+            : `✓ Saved ${targets.length} file(s). Click "Export ZIP" in header to download all.`
+        );
+      }
     } catch (err) {
       setNotice(err instanceof Error ? err.message : "Action failed");
     } finally {
