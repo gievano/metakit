@@ -46,10 +46,28 @@ function toWriteTags(edits: Record<string, string | number | null>): Record<stri
       const cleaned = v.split(",").map((s) => s.trim()).filter(Boolean);
       if (cleaned.length > 0) tags[f.tag] = cleaned;
     } else if (f.key === "datetimeoriginal" && typeof v === "string") {
-      // Skip if empty or invalid format
-      if (v.length < 10) continue;
-      // Convert "2024-01-15T10:30" → "2024:01:15 10:30:00"
-      const formatted = v.replace("T", " ").replace(/-/g, ":") + (v.length === 16 ? ":00" : "");
+      // Skip if empty or invalid format (need at least YYYY-MM-DD = 10 chars)
+      const trimmed = v.trim();
+      if (trimmed.length < 10) continue;
+      
+      // datetime-local format: "2024-01-15T10:30" (16 chars) or "2024-01-15T10:30:00" (19 chars)
+      // Convert to ExifTool format: "2024:01:15 10:30:00"
+      let formatted = trimmed.replace("T", " ");
+      
+      // Replace first 2 hyphens in date part (YYYY-MM-DD) with colons
+      formatted = formatted.replace(/^(\d{4})-(\d{2})-(\d{2})/, "$1:$2:$3");
+      
+      // Ensure seconds present
+      if (formatted.match(/^\d{4}:\d{2}:\d{2} \d{2}:\d{2}$/)) {
+        formatted += ":00"; // Add seconds if missing (16-char input)
+      }
+      
+      // Validate final format (YYYY:MM:DD HH:MM:SS)
+      if (!formatted.match(/^\d{4}:\d{2}:\d{2} \d{2}:\d{2}:\d{2}$/)) {
+        console.warn(`[toWriteTags] Invalid datetime format skipped: "${v}" → "${formatted}"`);
+        continue;
+      }
+      
       tags[f.tag] = formatted;
     } else if (typeof v === "string" && v.trim() === "") {
       // Skip empty strings for other fields
