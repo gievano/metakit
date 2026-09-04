@@ -65,6 +65,74 @@ export default function Home() {
       return { name: f.name, type: f.type, data: btoa(bin) };
     });
 
+  // Helper: chunked upload for large files (>4MB)
+  const uploadChunked = async (
+    file: File,
+    action: "write" | "strip",
+    edits?: EditValues
+  ): Promise<{ ok: boolean; data?: string; error?: string }> => {
+    const sessionId = crypto.randomUUID();
+    const CHUNK_SIZE = 4 * 1024 * 1024; // 4MB raw bytes
+    const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
+    
+    setNotice(`Uploading large file: chunk 1/${totalChunks}...`);
+    
+    // Upload chunks sequentially
+    for (let i = 0; i < totalChunks; i++) {
+      const start = i * CHUNK_SIZE;
+      const end = Math.min(start + CHUNK_SIZE, file.size);
+      const blob = file.slice(start, end);
+      const buf = await blob.arrayBuffer();
+      const bytes = new Uint8Array(buf);
+      let bin = "";
+      const chunk = 0x8000;
+      for (let j = 0; j < bytes.length; j += chunk) {
+        bin += String.fromCharCode(...bytes.subarray(j, j + chunk));
+      }
+      const base64 = btoa(bin);
+      
+      const res = await fetch("/api/metadata/chunk", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          sessionId,
+          chunkIndex: i,
+          totalChunks,
+          data: base64,
+        }),
+      });
+      
+      if (!res.ok) {
+        const json = await res.json();
+        throw new Error(json.error || "Chunk upload failed");
+      }
+      
+      setNotice(`Uploading large file: chunk ${i + 1}/${totalChunks}...`);
+    }
+    
+    // Finalize: process full file
+    setNotice("Processing metadata...");
+    const res = await fetch("/api/metadata", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        action: "finalize",
+        sessionId,
+        fileName: file.name,
+        isStrip: action === "strip",
+        edits: action === "write" ? edits : undefined,
+      }),
+    });
+    
+    if (!res.ok) {
+      const json = await res.json();
+      throw new Error(json.error || "Processing failed");
+    }
+    
+    const json = await res.json();
+    return json.results[0];
+  };
+
   const runAction = async (action: "write" | "strip") => {
     if (!rawFilesRef.current.size) return;
     const targets = batchMode
@@ -77,24 +145,70 @@ export default function Home() {
       return;
     }
 
-    // Pre-validation: estimate total size
-    let totalSize = 0;
-    for (const t of targets) {
-      const raw = rawFilesRef.current.get(t.id);
-      if (raw) totalSize += raw.size;
-    }
-    const estimatedPayload = totalSize * 1.4; // base64 overhead ~33% + JSON wrapper
-    if (estimatedPayload > 4_000_000 && targets.length === 1) {
-      setNotice("⚠️ File too large (>4MB). Server upload limit exceeded. Try a smaller file.");
-      return;
-    }
-
     if (action === "strip" && !confirm(`Strip ALL metadata from ${targets.length} file(s)? This cannot be undone.`))
       return;
 
     setBusy(true);
     setNotice(null);
     const edits = batchMode ? batchEdits : active?.edits ?? {};
+
+    // SINGLE FILE: Check if large, use chunked upload
+    if (targets.length === 1) {
+      const file = rawFilesRef.current.get(targets[0].id)!;
+      
+      // Warn if >20MB (5 chunks = practical limit)
+      if (file.size > 20_000_000) {
+        setNotice("⚠️ File >20MB may timeout. Consider smaller files.");
+        setBusy(false);
+        return;
+      }
+      
+      // Use chunked upload if >4MB
+      if (file.size > 4_000_000) {
+        setNotice("Large file detected, using chunked upload...");
+        try {
+          const result = await uploadChunked(
+            file,
+            action,
+            action === "write" ? edits : undefined
+          );
+          
+          if (!result.ok) throw new Error(result.error);
+          
+          // Update state same as normal flow
+          const bin = atob(result.data!);
+          const bytes = new Uint8Array(bin.length);
+          for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+          const newFile = new File([bytes], file.name, { type: file.type });
+          
+          // Backup original
+          if (!originalFilesRef.current.has(targets[0].id)) {
+            originalFilesRef.current.set(targets[0].id, file);
+          }
+          
+          rawFilesRef.current.set(targets[0].id, newFile);
+          const re = await parseFile(newFile);
+          patchFile(targets[0].id, {
+            rows: re.rows,
+            originalRows: targets[0].originalRows ?? targets[0].rows,
+            status: action === "strip" ? "stripped" : "saved",
+            error: undefined,
+          });
+          
+          // Auto-download
+          download(targets[0]);
+          
+          setNotice(`✓ ${action === "strip" ? "Stripped" : "Saved"} (large file)`);
+        } catch (err: any) {
+          setNotice(`✗ ${err.message}`);
+        } finally {
+          setBusy(false);
+        }
+        return;
+      }
+    }
+
+    // EXISTING LOGIC: Small files + batch (unchanged)
 
     // Chunked batch: split into groups of 3 files max per request
     const CHUNK_SIZE = 3;

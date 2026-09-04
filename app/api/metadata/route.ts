@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { ExifTool } from "exiftool-vendored";
 import { FIELDS } from "@/lib/fields";
+import { chunkStore } from "./chunk/route";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -15,14 +16,18 @@ interface ActionEdit {
 }
 
 interface ActionBody {
-  action: "write" | "strip";
-  files: {
+  action: "write" | "strip" | "finalize";
+  files?: {
     name: string;
     type: string;
     /** base64 of the file content */
     data: string;
   }[];
   edits?: Record<string, string | number | null>; // batch edits for "write"
+  // finalize action fields
+  sessionId?: string;
+  fileName?: string;
+  isStrip?: boolean;
 }
 
 function tmpPath(name: string): string {
@@ -64,7 +69,82 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
   }
 
-  const { action, files } = body;
+  const { action } = body;
+  
+  // NEW: Finalize chunked upload
+  if (action === "finalize") {
+    const { sessionId, fileName, isStrip, edits } = body;
+    
+    if (!sessionId || !fileName) {
+      return NextResponse.json(
+        { error: "Missing sessionId or fileName" },
+        { status: 400 }
+      );
+    }
+    
+    // Retrieve session
+    const session = chunkStore.get(sessionId);
+    if (!session || !session.chunks[0]) {
+      return NextResponse.json(
+        { error: "Session not found or incomplete" },
+        { status: 400 }
+      );
+    }
+    
+    const fullBuffer = session.chunks[0];
+    const tmp = tmpPath(fileName);
+    
+    try {
+      // Write full file to /tmp
+      await import("fs/promises").then(fs => fs.writeFile(tmp, fullBuffer));
+      
+      // Process with ExifTool
+      if (isStrip) {
+        await exiftool.deleteAllTags(tmp);
+      } else {
+        const tags = toWriteTags(edits ?? {});
+        if (Object.keys(tags).length === 0) {
+          return NextResponse.json(
+            { results: [{ id: sessionId, fileName, ok: false, error: "No edits provided" }] },
+            { status: 400 }
+          );
+        }
+        await exiftool.write(tmp, tags, { writeArgs: ["-overwrite_original"] });
+      }
+      
+      // Read result
+      const out = await import("fs/promises").then(fs => fs.readFile(tmp));
+      
+      // Cleanup session
+      chunkStore.delete(sessionId);
+      
+      return NextResponse.json({
+        results: [{
+          id: sessionId,
+          fileName,
+          ok: true,
+          data: out.toString("base64"),
+        }],
+      });
+    } catch (err: any) {
+      chunkStore.delete(sessionId);
+      return NextResponse.json({
+        results: [{
+          id: sessionId,
+          fileName,
+          ok: false,
+          error: err.message || "Processing failed",
+        }],
+      });
+    } finally {
+      await import("fs/promises")
+        .then(fs => fs.rm(tmp, { force: true }))
+        .catch(() => {});
+    }
+  }
+
+  // EXISTING: Single/batch write/strip logic
+  const { files } = body;
   if (action !== "write" && action !== "strip") {
     return NextResponse.json({ error: "Unknown action" }, { status: 400 });
   }
