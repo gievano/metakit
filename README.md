@@ -10,11 +10,12 @@ Edit metadata in smartphone photos (Android & iPhone) — right in your browser.
 
 ## What It Does
 
-**MetaKit is built for smartphone photos** — the JPEG files from Android cameras and iPhone exports. View metadata from any photo format, but edit only JPEG files (which covers 95% of smartphone photos).
+**MetaKit is built for smartphone photos** — JPEG and HEIC files from Android and iPhone cameras. View metadata from any photo format, edit JPEG and HEIC files (100% smartphone photo coverage).
 
 ### Core Features
 - **View metadata** from any photo format (JPEG, HEIC, PNG, TIFF, RAW) — parsed locally in browser
-- **Edit metadata** in JPEG files: Title, Description, Creator, Copyright, Keywords, Camera info, ISO, Aperture, GPS, Date Taken
+- **Edit metadata** in JPEG and HEIC files: Title, Description, Creator, Copyright, Keywords, Camera info, ISO, Aperture, GPS, Date Taken
+- **Auto-convert HEIC**: iPhone HEIC photos automatically convert to JPEG when edited (quality 95%)
 - **Batch mode**: apply same edits to multiple photos at once (processes in chunks of 3 files)
 - **Strip metadata**: remove GPS, camera serial, software info, edit history for privacy
 - **Export ZIP**: download all edited files in one archive
@@ -39,24 +40,23 @@ Edit metadata in smartphone photos (Android & iPhone) — right in your browser.
 
 | Format | View Metadata | Edit Metadata | Strip Metadata | Use Case |
 |--------|---------------|---------------|----------------|----------|
-| **JPEG** | ✅ | ✅ | ✅ | Android photos, iPhone exported photos, most shared photos |
-| **HEIC** | ✅ | ❌ | ✅ | iPhone native format (see workaround below) |
+| **JPEG** | ✅ | ✅ | ✅ | Android photos, most shared photos |
+| **HEIC** | ✅ | ✅ (converts to JPEG) | ✅ | iPhone native format (auto-converts when edited) |
 | PNG, TIFF, RAW | ✅ | ❌ | ✅ | Professional cameras, screenshots |
 
-### For iPhone HEIC Photos
+### HEIC Handling
 
-iPhone saves photos as HEIC by default. To edit metadata in HEIC photos, convert to JPEG first:
+iPhone HEIC photos are **automatically converted to JPEG** when you edit metadata (quality 95%, ~5% loss). This is a technical limitation: HEIC uses a different metadata structure than JPEG, so we convert → edit → return JPEG.
 
-**Option 1: Export as JPEG from iPhone**
-1. Open photo in Photos app
-2. Tap **Share → Save to Files** (auto-converts to JPEG)
-3. Upload the JPEG to MetaKit
+**Trade-offs:**
+- ✅ You can edit iPhone HEIC photos without manual conversion
+- ✅ Output JPEG is more compatible than HEIC (works everywhere)
+- ❌ Lossy conversion (~5% quality loss)
+- ❌ File size increases (HEIC is typically 50% smaller than JPEG)
+- ❌ Processing time +2-5 seconds per HEIC file
+- ❌ You upload HEIC, download JPEG (format changes)
 
-**Option 2: Change iPhone Camera Settings**
-- Go to **Settings → Camera → Formats**
-- Select **Most Compatible** (saves as JPEG instead of HEIC)
-
-**Note:** Most photo sharing (WhatsApp, Instagram, email) already converts HEIC→JPEG automatically, so you're likely working with JPEG files anyway.
+**Alternative:** If you need to preserve HEIC format, enable **Settings → Camera → Formats → Most Compatible** on iPhone to capture JPEG by default.
 
 ---
 
@@ -65,6 +65,7 @@ iPhone saves photos as HEIC by default. To edit metadata in HEIC photos, convert
 - Frontend: Next.js 16, React 19, TypeScript, Tailwind 4
 - Metadata Read: [ExifReader](https://www.npmjs.com/package/exifreader) (client-side, all formats)
 - Metadata Write: [piexifjs](https://www.npmjs.com/package/piexifjs) (server-side, JPEG only)
+- HEIC Conversion: [sharp](https://www.npmjs.com/package/sharp) (server-side, HEIC→JPEG)
 - Export: JSZip
 - Deploy: Vercel (serverless, no Perl/ExifTool dependency)
 
@@ -79,14 +80,14 @@ iPhone saves photos as HEIC by default. To edit metadata in HEIC photos, convert
 4. Click a file, switch to **Viewer** tab to see metadata
 
 ### Edit Single Photo
-1. Select a JPEG file (badge shows "View only" for non-JPEG)
+1. Select a JPEG or HEIC file (badge shows "View only" for PNG/TIFF)
 2. Switch to **Editor** tab
 3. Fill fields: Title, Description, Keywords, Camera info, GPS, Date Taken
-4. Click **Save edits** → file auto-downloads with updated metadata
+4. Click **Save edits** → file auto-downloads with updated metadata (HEIC converts to JPEG)
 
 ### Batch Edit
 1. Toggle **Batch mode** (top-right checkbox)
-2. Check JPEG files to edit (non-JPEG files are skipped)
+2. Check JPEG/HEIC files to edit (PNG/TIFF files are skipped)
 3. Fill fields (same values apply to all checked files)
 4. Click **Apply to N file(s)** → server processes in chunks (3 files/request)
 5. Progress shows "Processing 1-3 of 10..."
