@@ -37,11 +37,18 @@ export default function FileList({
           >
             <div className="flex items-center justify-between gap-2">
               <span className="truncate">{f.name}</span>
-              {isLarge && (
-                <span className="text-[10px] text-orange-400 border border-orange-900 rounded-sm px-1 py-0.5 whitespace-nowrap">
-                  Large
-                </span>
-              )}
+              <div className="flex items-center gap-1">
+                {isLarge && (
+                  <span className="text-[10px] text-orange-400 border border-orange-900 rounded-sm px-1 py-0.5 whitespace-nowrap">
+                    Large
+                  </span>
+                )}
+                {!f.isEditable && (
+                  <span className="text-[10px] text-dim border border-border rounded-sm px-1 py-0.5 whitespace-nowrap">
+                    View only
+                  </span>
+                )}
+              </div>
             </div>
             <div className="flex items-center gap-2">
               <span className="text-[10px] text-dim">

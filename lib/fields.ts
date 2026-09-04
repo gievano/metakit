@@ -55,4 +55,5 @@ export interface ParsedFile {
   edits: EditValues;
   status: "ready" | "saving" | "saved" | "stripped" | "error";
   error?: string;
+  isEditable?: boolean; // JPEG = editable, HEIC/PNG/etc = view-only
 }

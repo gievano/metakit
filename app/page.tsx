@@ -84,7 +84,11 @@ export default function Home() {
   }, [tab, active]);
 
   const addFiles = useCallback(async (incoming: File[]) => {
-    const parsed = await Promise.all(incoming.map(parseFile));
+    const parsed = await Promise.all(incoming.map(async (file) => {
+      const isJPEG = file.type === "image/jpeg" || !!file.name.match(/\.(jpg|jpeg)$/i);
+      const p = await parseFile(file);
+      return { ...p, isEditable: isJPEG };
+    }));
     for (const p of parsed) {
       const raw = incoming.find((f) => f.name === p.name);
       if (raw) {
@@ -552,14 +556,14 @@ export default function Home() {
                   <>
                     <button
                       onClick={() => runAction("write")}
-                      disabled={busy}
+                      disabled={busy || (!batchMode && !!active && !active.isEditable)}
                       className={`${btn} bg-fg text-bg border-fg font-medium hover:opacity-90`}
                     >
                       {busy ? "Saving…" : batchMode ? `Apply to ${selected.size} file(s)` : "Save edits"}
                     </button>
                     <button
                       onClick={() => runAction("strip")}
-                      disabled={busy}
+                      disabled={busy || (!batchMode && !!active && !active.isEditable)}
                       className={`${btn} border-red-900 text-red-500 hover:border-red-500`}
                     >
                       Strip all
@@ -599,7 +603,27 @@ export default function Home() {
               ) : active ? (
                 <div className="flex flex-col gap-4">
                   {active.error && <div className="text-xs text-red-500">{active.error}</div>}
-                  <EditorForm values={active.edits} onChange={(k, v) => setEdit(active.id, k, v)} />
+                  {!active.isEditable && (
+                    <div className="px-4 py-3 bg-orange-950/30 border border-orange-900 text-orange-400 text-xs rounded-md">
+                      <div className="font-medium mb-2">⚠️ This file format is not supported for editing</div>
+                      <div className="text-xs text-orange-300/80 space-y-1">
+                        <p><strong>MetaKit currently supports JPEG photos only</strong> (most Android and iPhone photos).</p>
+                        <p className="mt-2"><strong>For iPhone HEIC photos:</strong></p>
+                        <ol className="list-decimal list-inside space-y-1 ml-2">
+                          <li>Open photo in iPhone Photos app</li>
+                          <li>Tap Share → Save to Files (auto-converts to JPEG)</li>
+                          <li>Upload the JPEG file here</li>
+                        </ol>
+                        <p className="mt-2"><strong>Or change iPhone camera settings:</strong><br/>
+                        Settings → Camera → Formats → <strong>Most Compatible</strong> (saves as JPEG by default)</p>
+                      </div>
+                    </div>
+                  )}
+                  <EditorForm 
+                    values={active.edits} 
+                    onChange={(k, v) => setEdit(active.id, k, v)} 
+                    disabled={!active.isEditable}
+                  />
                 </div>
               ) : (
                 <div className="text-xs text-dim p-6">Select a file.</div>

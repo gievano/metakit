@@ -1,90 +1,157 @@
 import { NextRequest, NextResponse } from "next/server";
-import { ExifTool } from "exiftool-vendored";
+import piexif from "piexifjs";
 import { FIELDS } from "@/lib/fields";
 import { chunkStore } from "./chunk/route";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
 
-// ponytail: single shared ExifTool instance — batches are sequential, fine for this scale
-const exiftool = new ExifTool({ taskRetries: 1 });
-
-interface ActionEdit {
-  id: string;
-  fileName: string;
-  edits: Record<string, string | number | null>;
-}
-
 interface ActionBody {
   action: "write" | "strip" | "finalize";
   files?: {
     name: string;
     type: string;
-    /** base64 of the file content */
     data: string;
   }[];
-  edits?: Record<string, string | number | null>; // batch edits for "write"
-  // finalize action fields
+  edits?: Record<string, string | number | null>;
   sessionId?: string;
   fileName?: string;
   isStrip?: boolean;
 }
 
-function tmpPath(name: string): string {
-  const safe = name.replace(/[^a-zA-Z0-9._-]/g, "_");
-  return `/tmp/${globalThis.crypto.randomUUID()}-${safe}`;
+// Helper: convert decimal degrees to DMS (degrees, minutes, seconds)
+function toDMS(decimal: number): [[number, number], [number, number], [number, number]] {
+  const abs = Math.abs(decimal);
+  const degrees = Math.floor(abs);
+  const minutesFloat = (abs - degrees) * 60;
+  const minutes = Math.floor(minutesFloat);
+  const seconds = Math.round((minutesFloat - minutes) * 60 * 100); // *100 for precision
+  return [
+    [degrees, 1],
+    [minutes, 1],
+    [seconds, 100],
+  ];
 }
 
-function toWriteTags(edits: Record<string, string | number | null>): Record<string, string | number | string[] | null> {
-  const tags: Record<string, string | number | string[] | null> = {};
+// Helper: convert fraction string "1/200" to piexif fraction [1, 200]
+function toFraction(value: number): [number, number] {
+  // Simple fraction: multiply by 1000 to preserve decimals
+  const numerator = Math.round(value * 1000);
+  return [numerator, 1000];
+}
+
+function applyEdits(dataURL: string, edits: Record<string, string | number | null>): string {
+  let exifObj: any;
+  
+  try {
+    exifObj = piexif.load(dataURL);
+  } catch {
+    // No existing EXIF, create empty structure
+    exifObj = {
+      "0th": {},
+      "Exif": {},
+      "GPS": {},
+      "Interop": {},
+      "1st": {},
+      thumbnail: null,
+    };
+  }
+
   for (const f of FIELDS) {
     if (!(f.key in edits)) continue;
     const v = edits[f.key];
+
     if (v === null || v === "") {
-      tags[f.tag] = null;
-    } else if (f.key === "keywords" && typeof v === "string") {
-      const cleaned = v.split(",").map((s) => s.trim()).filter(Boolean);
-      if (cleaned.length > 0) tags[f.tag] = cleaned;
-    } else if (f.key === "datetimeoriginal" && typeof v === "string") {
-      // Skip if empty or invalid format (need at least YYYY-MM-DD = 10 chars)
-      const trimmed = v.trim();
-      if (trimmed.length < 10) continue;
-      
-      // datetime-local format: "2024-01-15T10:30" (16 chars) or "2024-01-15T10:30:00" (19 chars)
-      // Convert to ExifTool format: "2024:01:15 10:30:00"
-      let formatted = trimmed.replace("T", " ");
-      
-      // Replace first 2 hyphens in date part (YYYY-MM-DD) with colons
-      formatted = formatted.replace(/^(\d{4})-(\d{2})-(\d{2})/, "$1:$2:$3");
-      
-      // Ensure seconds present
-      if (formatted.match(/^\d{4}:\d{2}:\d{2} \d{2}:\d{2}$/)) {
-        formatted += ":00"; // Add seconds if missing (16-char input)
-      }
-      
-      // Validate final format (YYYY:MM:DD HH:MM:SS)
-      if (!formatted.match(/^\d{4}:\d{2}:\d{2} \d{2}:\d{2}:\d{2}$/)) {
-        console.warn(`[toWriteTags] Invalid datetime format skipped: "${v}" → "${formatted}"`);
-        continue;
-      }
-      
-      tags[f.tag] = formatted;
-    } else if (typeof v === "string" && v.trim() === "") {
-      // Skip empty strings for other fields
+      // Clear field (set to empty)
       continue;
-    } else {
-      tags[f.tag] = v;
+    }
+
+    // Map field key to piexif tag
+    switch (f.key) {
+      case "title":
+      case "description":
+        if (typeof v === "string") exifObj["0th"][piexif.ImageIFD.ImageDescription] = v;
+        break;
+      case "creator":
+        if (typeof v === "string") exifObj["0th"][piexif.ImageIFD.Artist] = v;
+        break;
+      case "copyright":
+        if (typeof v === "string") exifObj["0th"][piexif.ImageIFD.Copyright] = v;
+        break;
+      case "keywords":
+        if (typeof v === "string") {
+          // Store as semicolon-separated string (EXIF standard)
+          const cleaned = v.split(",").map((s) => s.trim()).filter(Boolean).join(";");
+          if (cleaned) exifObj["0th"][piexif.ImageIFD.XPKeywords] = cleaned;
+        }
+        break;
+      case "usercomment":
+        if (typeof v === "string") exifObj["Exif"][piexif.ExifIFD.UserComment] = v;
+        break;
+      case "datetimeoriginal":
+        if (typeof v === "string") {
+          const trimmed = v.trim();
+          if (trimmed.length < 10) break;
+          let formatted = trimmed.replace("T", " ");
+          formatted = formatted.replace(/^(\d{4})-(\d{2})-(\d{2})/, "$1:$2:$3");
+          if (formatted.match(/^\d{4}:\d{2}:\d{2} \d{2}:\d{2}$/)) {
+            formatted += ":00";
+          }
+          if (formatted.match(/^\d{4}:\d{2}:\d{2} \d{2}:\d{2}:\d{2}$/)) {
+            exifObj["Exif"][piexif.ExifIFD.DateTimeOriginal] = formatted;
+          }
+        }
+        break;
+      case "make":
+        if (typeof v === "string") exifObj["0th"][piexif.ImageIFD.Make] = v;
+        break;
+      case "model":
+        if (typeof v === "string") exifObj["0th"][piexif.ImageIFD.Model] = v;
+        break;
+      case "lensmodel":
+        if (typeof v === "string") exifObj["Exif"][piexif.ExifIFD.LensModel] = v;
+        break;
+      case "iso":
+        if (typeof v === "number") exifObj["Exif"][piexif.ExifIFD.ISOSpeedRatings] = v;
+        break;
+      case "fnumber":
+        if (typeof v === "number") exifObj["Exif"][piexif.ExifIFD.FNumber] = toFraction(v);
+        break;
+      case "exposuretime":
+        if (typeof v === "number") exifObj["Exif"][piexif.ExifIFD.ExposureTime] = toFraction(v);
+        break;
+      case "focallength":
+        if (typeof v === "number") exifObj["Exif"][piexif.ExifIFD.FocalLength] = toFraction(v);
+        break;
+      case "whitebalance":
+        if (typeof v === "string") exifObj["Exif"][piexif.ExifIFD.WhiteBalance] = v;
+        break;
+      case "flash":
+        if (typeof v === "string") exifObj["Exif"][piexif.ExifIFD.Flash] = v;
+        break;
     }
   }
+
+  // GPS handling
   if ("gpslat" in edits && typeof edits.gpslat === "number") {
-    tags.GPSLatitude = Math.abs(edits.gpslat);
-    tags.GPSLatitudeRef = edits.gpslat >= 0 ? "N" : "S";
-    if ("gpslon" in edits && typeof edits.gpslon === "number") {
-      tags.GPSLongitude = Math.abs(edits.gpslon);
-      tags.GPSLongitudeRef = edits.gpslon >= 0 ? "E" : "W";
-    }
+    const lat = edits.gpslat;
+    exifObj["GPS"][piexif.GPSIFD.GPSLatitude] = toDMS(lat);
+    exifObj["GPS"][piexif.GPSIFD.GPSLatitudeRef] = lat >= 0 ? "N" : "S";
   }
-  return tags;
+  if ("gpslon" in edits && typeof edits.gpslon === "number") {
+    const lon = edits.gpslon;
+    exifObj["GPS"][piexif.GPSIFD.GPSLongitude] = toDMS(lon);
+    exifObj["GPS"][piexif.GPSIFD.GPSLongitudeRef] = lon >= 0 ? "E" : "W";
+  }
+
+  // Dump back to binary
+  const exifBytes = piexif.dump(exifObj);
+  return piexif.insert(exifBytes, dataURL);
+}
+
+function stripMetadata(dataURL: string): string {
+  // Remove all EXIF data
+  return piexif.remove(dataURL);
 }
 
 export async function POST(req: NextRequest) {
@@ -96,19 +163,18 @@ export async function POST(req: NextRequest) {
   }
 
   const { action } = body;
-  
-  // NEW: Finalize chunked upload
+
+  // Finalize chunked upload
   if (action === "finalize") {
     const { sessionId, fileName, isStrip, edits } = body;
-    
+
     if (!sessionId || !fileName) {
       return NextResponse.json(
         { error: "Missing sessionId or fileName" },
         { status: 400 }
       );
     }
-    
-    // Retrieve session
+
     const session = chunkStore.get(sessionId);
     if (!session || !session.chunks[0]) {
       return NextResponse.json(
@@ -116,46 +182,55 @@ export async function POST(req: NextRequest) {
         { status: 400 }
       );
     }
-    
+
     const fullBuffer = session.chunks[0];
-    const tmp = tmpPath(fileName);
     
     try {
-      // Write full file to /tmp
-      await import("fs/promises").then(fs => fs.writeFile(tmp, fullBuffer));
-      
-      // Process with ExifTool
-      if (isStrip) {
-        await exiftool.deleteAllTags(tmp);
-      } else {
-        const tags = toWriteTags(edits ?? {});
-        if (Object.keys(tags).length === 0) {
-          return NextResponse.json(
-            { results: [{ id: sessionId, fileName, ok: false, error: "No edits provided" }] },
-            { status: 400 }
-          );
-        }
-        console.log("[finalize] Writing tags:", JSON.stringify(tags, null, 2));
-        try {
-          await exiftool.write(tmp, tags, { writeArgs: ["-overwrite_original"] });
-        } catch (exiftoolErr: any) {
-          console.error("[finalize] ExifTool error:", exiftoolErr.message);
-          throw new Error(`ExifTool: ${exiftoolErr.message}`);
-        }
+      // Check if JPEG
+      const isJPEG = fileName.match(/\.(jpg|jpeg)$/i);
+      if (!isJPEG) {
+        return NextResponse.json({
+          results: [{
+            id: sessionId,
+            fileName,
+            ok: false,
+            error: "Only JPEG files supported for editing",
+          }],
+        });
       }
+
+      // Convert buffer to base64 dataURL
+      const base64 = fullBuffer.toString("base64");
+      const dataURL = `data:image/jpeg;base64,${base64}`;
+
+      let resultDataURL: string;
+      if (isStrip) {
+        resultDataURL = stripMetadata(dataURL);
+      } else {
+        if (!edits || Object.keys(edits).length === 0) {
+          return NextResponse.json({
+            results: [{
+              id: sessionId,
+              fileName,
+              ok: false,
+              error: "No edits provided",
+            }],
+          });
+        }
+        resultDataURL = applyEdits(dataURL, edits);
+      }
+
+      // Convert dataURL back to buffer
+      const resultBase64 = resultDataURL.replace(/^data:image\/jpeg;base64,/, "");
       
-      // Read result
-      const out = await import("fs/promises").then(fs => fs.readFile(tmp));
-      
-      // Cleanup session
       chunkStore.delete(sessionId);
-      
+
       return NextResponse.json({
         results: [{
           id: sessionId,
           fileName,
           ok: true,
-          data: out.toString("base64"),
+          data: resultBase64,
         }],
       });
     } catch (err: any) {
@@ -168,14 +243,10 @@ export async function POST(req: NextRequest) {
           error: err.message || "Processing failed",
         }],
       });
-    } finally {
-      await import("fs/promises")
-        .then(fs => fs.rm(tmp, { force: true }))
-        .catch(() => {});
     }
   }
 
-  // EXISTING: Single/batch write/strip logic
+  // Regular write/strip (small files)
   const { files } = body;
   if (action !== "write" && action !== "strip") {
     return NextResponse.json({ error: "Unknown action" }, { status: 400 });
@@ -188,39 +259,43 @@ export async function POST(req: NextRequest) {
 
   for (const f of files) {
     const id = `${f.name}-${f.data.length}`;
-    const tmp = tmpPath(f.name);
-    let buf: Buffer;
+    
     try {
-      buf = Buffer.from(f.data, "base64");
-    } catch {
-      results.push({ id, fileName: f.name, ok: false, error: "Invalid base64" });
-      continue;
-    }
-    try {
-      await import("fs/promises").then((fs) => fs.writeFile(tmp, buf));
+      // Check if JPEG
+      const isJPEG = f.name.match(/\.(jpg|jpeg)$/i);
+      if (!isJPEG) {
+        results.push({
+          id,
+          fileName: f.name,
+          ok: false,
+          error: "Only JPEG files supported for editing",
+        });
+        continue;
+      }
+
+      const dataURL = `data:image/jpeg;base64,${f.data}`;
+
+      let resultDataURL: string;
       if (action === "strip") {
-        await exiftool.deleteAllTags(tmp);
+        resultDataURL = stripMetadata(dataURL);
       } else {
-        const tags = toWriteTags(body.edits ?? {});
-        if (Object.keys(tags).length === 0) {
+        const edits = body.edits ?? {};
+        if (Object.keys(edits).length === 0) {
           results.push({ id, fileName: f.name, ok: false, error: "No edits provided" });
           continue;
         }
-        await exiftool.write(tmp, tags, { writeArgs: ["-overwrite_original"] });
+        resultDataURL = applyEdits(dataURL, edits);
       }
-      const out = await import("fs/promises").then((fs) => fs.readFile(tmp));
-      results.push({ id, fileName: f.name, ok: true, data: out.toString("base64") });
-    } catch (err) {
+
+      const resultBase64 = resultDataURL.replace(/^data:image\/jpeg;base64,/, "");
+      results.push({ id, fileName: f.name, ok: true, data: resultBase64 });
+    } catch (err: any) {
       results.push({
         id,
         fileName: f.name,
         ok: false,
-        error: err instanceof Error ? err.message : "ExifTool error",
+        error: err.message || "Processing error",
       });
-    } finally {
-      await import("fs/promises")
-        .then((fs) => fs.rm(tmp, { force: true }))
-        .catch(() => {});
     }
   }
 

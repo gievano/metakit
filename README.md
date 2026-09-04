@@ -1,6 +1,6 @@
 # MetaKit
 
-View, edit, and strip EXIF/IPTC/XMP/GPS metadata from images in your browser.
+Edit metadata in smartphone photos (Android & iPhone) — right in your browser.
 
 [![Live Demo](https://img.shields.io/badge/demo-live-blue)](https://metakit-six.vercel.app)
 
@@ -8,37 +8,65 @@ View, edit, and strip EXIF/IPTC/XMP/GPS metadata from images in your browser.
 
 ---
 
-## Features
+## What It Does
 
-### Core
-- View EXIF, IPTC, XMP, GPS, and file metadata (parsed client-side)
-- Edit 23+ fields: Title, Description, Creator, Copyright, Keywords, Camera/Lens, ISO, Aperture, GPS, Rating
-- Batch mode: apply edits to multiple files (processes up to 50-100 photos in chunks)
-- Strip metadata: remove GPS, camera serial, software info, and edit history for privacy
-- Export JSON for metadata backup without images
-- Export ZIP to download all files (edited + original)
-- Revert to restore original file after edits
+**MetaKit is built for smartphone photos** — the JPEG files from Android cameras and iPhone exports. View metadata from any photo format, but edit only JPEG files (which covers 95% of smartphone photos).
 
-### Privacy
+### Core Features
+- **View metadata** from any photo format (JPEG, HEIC, PNG, TIFF, RAW) — parsed locally in browser
+- **Edit metadata** in JPEG files: Title, Description, Creator, Copyright, Keywords, Camera info, ISO, Aperture, GPS, Date Taken
+- **Batch mode**: apply same edits to multiple photos at once (processes in chunks of 3 files)
+- **Strip metadata**: remove GPS, camera serial, software info, edit history for privacy
+- **Export ZIP**: download all edited files in one archive
+- **Export JSON**: backup metadata without images
+- **Revert**: restore original file after edits
+
+### Privacy First
 - Metadata parses locally in browser via [ExifReader](https://github.com/mattiasw/ExifReader)
-- Files upload to server only during save/strip, processed in-memory, then deleted
+- Files upload to server only when you click Save/Strip
+- Processed in-memory, deleted immediately after response
 - No database, no logs, no file retention, no user tracking
 
-### Interface
+### Mobile Friendly
 - Dark monospace theme (Geist Mono font)
-- Mobile responsive (collapsible sidebar, stacked forms)
+- Responsive layout (collapsible sidebar on phones)
 - Progress indicator for batch operations
 - Selection counter with clear button
-- Plain error messages
+
+---
+
+## Supported Formats
+
+| Format | View Metadata | Edit Metadata | Strip Metadata | Use Case |
+|--------|---------------|---------------|----------------|----------|
+| **JPEG** | ✅ | ✅ | ✅ | Android photos, iPhone exported photos, most shared photos |
+| **HEIC** | ✅ | ❌ | ✅ | iPhone native format (see workaround below) |
+| PNG, TIFF, RAW | ✅ | ❌ | ✅ | Professional cameras, screenshots |
+
+### For iPhone HEIC Photos
+
+iPhone saves photos as HEIC by default. To edit metadata in HEIC photos, convert to JPEG first:
+
+**Option 1: Export as JPEG from iPhone**
+1. Open photo in Photos app
+2. Tap **Share → Save to Files** (auto-converts to JPEG)
+3. Upload the JPEG to MetaKit
+
+**Option 2: Change iPhone Camera Settings**
+- Go to **Settings → Camera → Formats**
+- Select **Most Compatible** (saves as JPEG instead of HEIC)
+
+**Note:** Most photo sharing (WhatsApp, Instagram, email) already converts HEIC→JPEG automatically, so you're likely working with JPEG files anyway.
 
 ---
 
 ## Tech Stack
 
 - Frontend: Next.js 16, React 19, TypeScript, Tailwind 4
-- Metadata: [ExifReader](https://www.npmjs.com/package/exifreader) (client), [exiftool-vendored](https://www.npmjs.com/package/exiftool-vendored) (server)
+- Metadata Read: [ExifReader](https://www.npmjs.com/package/exifreader) (client-side, all formats)
+- Metadata Write: [piexifjs](https://www.npmjs.com/package/piexifjs) (server-side, JPEG only)
 - Export: JSZip
-- Deploy: Vercel (serverless)
+- Deploy: Vercel (serverless, no Perl/ExifTool dependency)
 
 ---
 
@@ -46,51 +74,40 @@ View, edit, and strip EXIF/IPTC/XMP/GPS metadata from images in your browser.
 
 ### Upload & View
 1. Visit [metakit-six.vercel.app](https://metakit-six.vercel.app)
-2. Drag-drop or click to upload photos (JPG, PNG, HEIC, TIFF, WEBP)
+2. Drag-drop or click to upload photos
 3. Files parse locally (no upload yet)
-4. Click a file, switch to Viewer tab to see metadata
+4. Click a file, switch to **Viewer** tab to see metadata
 
-### Edit Single File
-1. Select a file
-2. Switch to Editor tab
-3. Fill fields (Title, Description, Keywords, Camera info, GPS)
-4. Click Save edits, file auto-downloads with updated metadata
+### Edit Single Photo
+1. Select a JPEG file (badge shows "View only" for non-JPEG)
+2. Switch to **Editor** tab
+3. Fill fields: Title, Description, Keywords, Camera info, GPS, Date Taken
+4. Click **Save edits** → file auto-downloads with updated metadata
 
 ### Batch Edit
-1. Toggle Batch mode (top-right)
-2. Check files to edit
-3. Fill fields (same values apply to all)
-4. Click Apply to N file(s), server processes in chunks (3 files/request)
+1. Toggle **Batch mode** (top-right checkbox)
+2. Check JPEG files to edit (non-JPEG files are skipped)
+3. Fill fields (same values apply to all checked files)
+4. Click **Apply to N file(s)** → server processes in chunks (3 files/request)
 5. Progress shows "Processing 1-3 of 10..."
-6. Click Export ZIP to download all edited files
+6. Click **Export ZIP** to download all edited files
 
-### Strip Metadata
-1. Select file(s)
-2. Click Strip all, confirm
-3. Metadata removed (EXIF, GPS, camera serial, software, edit history)
-4. Single file auto-downloads; batch needs Export ZIP
+### Strip Metadata (Privacy)
+1. Select file(s) — works on any format
+2. Click **Strip all**, confirm
+3. Metadata removed: EXIF, GPS, camera serial, software info, edit history
+4. Single file auto-downloads; batch files need **Export ZIP**
 
-### Revert
-- After editing, Revert button appears (single-file mode)
-- Click to restore original file
-
----
-
-## Limits (Vercel Hobby Plan)
-
-| Scenario | Limit | Workaround |
-|----------|-------|------------|
-| Single file size | 4.5MB | Files above 4MB can be viewed (client-side unlimited) but not edited/stripped via server |
-| Batch size | ~50-100 photos (chunked: 3 files/request) | Chunked processing bypasses per-request 4.5MB limit |
-| Timeout | 60s function timeout | ~20-30 files per batch (depends on file size) |
-| Viewer | ~100-200 photos | Browser memory limit (~1GB) |
+### Revert to Original
+- After editing, **Revert** button appears (single-file mode)
+- Click to restore original unedited file
 
 ---
 
-## Editable Fields (23)
+## Editable Fields (18 for JPEG)
 
 ### Descriptive
-Title, Description, Creator/Artist, Copyright, Keywords, Headline, Instructions, Credit, Source, User Comment, Rating (0-5)
+Title, Description, Creator/Artist, Copyright, Keywords, User Comment
 
 ### Camera & Technical
 Camera Make, Camera Model, Lens Model, ISO, Aperture (F-number), Shutter Speed, Focal Length, White Balance, Flash
@@ -100,9 +117,26 @@ Date Taken, GPS Latitude, GPS Longitude
 
 ---
 
+## Limits (Vercel Hobby Plan)
+
+| Scenario | Limit | Notes |
+|----------|-------|-------|
+| Single file size | 4.5MB upload | Files >4MB use chunked upload (up to 20MB supported) |
+| Batch size | ~50-100 photos | Chunked processing (3 files/request) |
+| Function timeout | 60s | ~20-30 files per batch max |
+| Viewer | ~100-200 photos | Browser memory limit (~1GB) |
+
+---
+
 ## Privacy & Security
 
-ExifReader runs in browser with no upload until you click Save/Strip. Files upload to Vercel serverless function only during save/strip, processed in-memory (via `/tmp/` directory), deleted after response. No database, no logs, no file retention. Repo is public at [github.com/gievano/metakit](https://github.com/gievano/metakit).
+**Client-side parsing:** ExifReader runs in browser, no upload until you click Save/Strip.
+
+**Server processing:** Files upload to Vercel serverless function only during Save/Strip actions. Processed in-memory, deleted immediately after response.
+
+**No retention:** No database, no logs, no file storage, no user tracking.
+
+**Open source:** Repo is public at [github.com/gievano/metakit](https://github.com/gievano/metakit).
 
 ---
 
